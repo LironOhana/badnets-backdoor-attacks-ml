@@ -35,16 +35,15 @@ This section is intended for those who want to run and reproduce the experiments
     pip install --upgrade pip
     pip install -r requirements.txt
 ```
-### Running the Experiments
+### Running the Experiments and Generating Figures
 
-Each experiment can be run using **only one script**, which performs all the required runs and saves all outputs (CSV files and graphs).
+Each experiment consists of **two steps**:
 
-📁 **Outputs are saved in:**
+1. **Running the experiment script** – performs model training and saves epoch-level results as CSV files under `results/csv/`.
+2. **Running the analysis script** – reads the CSV files and generates the figures under `results/figures/`.
 
--   `results/csv/` – Logs at the epoch level.
-    
--   `results/figures/` – Summary graphs.
-    
+Both steps are required in order to fully reproduce the results presented in this project.
+
 
 **Experiment 1 – Basic Experiment (Baseline):**
 ```
@@ -53,16 +52,19 @@ python experiments/exp01_baseline.py
 **Experiment 2 – Impact of Poisoning Rate in Data:**
 ```
 python experiments/exp02_run_all_poisoning_rates.py
+python analysis/exp02_visualize_poisoning_rate.py
 ```
 
 **Experiment 3 – Impact of Trigger Size:**
 ```
 python experiments/exp03_run_all_trigger_sizes.py
+python analysis/exp03_visualize_trigger_size.py
 ```
 
 **Experiment 4 – Impact of Trigger Position:**
 ```
 python experiments/exp04_run_all_positions.py
+python analysis/exp04_visualize_trigger_position.py
 ```
 
 ### Reproducing Results
