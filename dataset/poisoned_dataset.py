@@ -7,11 +7,11 @@ import os
 
 
 class TriggerHandler(object):
-"""
-Adds the trigger to an image.
-Default position is bottom-right (br).
-Supported positions: br, bl, tr, tl, center.
-"""
+    """
+    Adds the trigger to an image.
+    Default position is bottom-right (br).
+    Supported positions: br, bl, tr, tl, center.
+    """
 
 
     def __init__(self, trigger_path, trigger_size, trigger_label, img_width, img_height, trigger_pos="br"):
