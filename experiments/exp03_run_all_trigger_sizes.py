@@ -1,40 +1,71 @@
 """
-Experiment 3 (runner) – run all trigger_size values one by one and save outputs.
+Experiment 3 (runner) – run all trigger_size values sequentially and save outputs.
 
-This script runs a sweep over trigger_size values (trigger size in pixels).
+This script sweeps over trigger_size values (trigger size in pixels).
 For each run it saves:
 - a log file to: results/logs/
-- a CSV file to: results/csv/   (copied from ./logs created by main.py, based on run_name)
+- a CSV file to: results/csv/  (copied from ./logs created by main.py, based on run_name)
 
+Notes:
+- main.py writes training CSV logs into ./logs.
+- We look for a CSV that ends with "__{run_name}.csv".
+- If multiple files match, we copy the newest one.
 """
 
-
+import argparse
 import os
+import select
+import shutil
+import subprocess
 import sys
 import time
-import shutil
-import select
-import subprocess
-import argparse
 from pathlib import Path
+from typing import Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MAIN_PY = PROJECT_ROOT / "main.py"
 
+# Fixed experiment settings (adjust here if needed)
 DATASET = "MNIST"
 EPOCHS = 100
 TRIGGER_LABEL = 1
-DEVICE = "cpu"
 
 # Keep poisoning_rate above the success threshold so we can isolate the effect of trigger_size
 POISONING_RATE = 0.05
 
-# Default sizes used in the experiment 
+# Performance-related settings (kept constant)
+BATCH_SIZE = 64          # recommended for stable/consistent behavior vs the "original" setup
+NUM_WORKERS = 4          # speeds up data loading in Colab
+
+# Default sizes used in the experiment
 DEFAULT_SIZES = [1, 3, 4, 5]
 
 
-def build_command(trigger_size: int):
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Experiment 3 – run all trigger_size values sequentially"
+    )
+    parser.add_argument(
+        "--sizes",
+        type=int,
+        nargs="*",
+        default=DEFAULT_SIZES,
+        help="List of trigger sizes to run (e.g. --sizes 1 3 4 5)",
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Device to use: cpu | cuda | cuda:0 | mps (default: cpu). In Colab use --device cuda.",
+    )
+    return parser.parse_args()
+
+
+def _pr_tag(rate: float) -> str:
+    return str(rate).replace(".", "p")
+
+
+def build_command(trigger_size: int, device: str) -> tuple[list[str], str]:
     ts_tag = str(trigger_size)
     run_name = f"exp03_ts{ts_tag}"
 
@@ -44,16 +75,26 @@ def build_command(trigger_size: int):
         str(MAIN_PY),
         "--dataset", DATASET,
         "--epochs", str(EPOCHS),
+        "--batch_size", str(BATCH_SIZE),
+        "--num_workers", str(NUM_WORKERS),
         "--poisoning_rate", str(POISONING_RATE),
         "--trigger_label", str(TRIGGER_LABEL),
         "--trigger_size", str(trigger_size),
-        "--device", DEVICE,
+        "--device", device,
         "--run_name", run_name,
     ]
     return cmd, run_name
 
 
-def run_with_pty(cmd, log_path: Path):
+def run_with_pty(cmd: list[str], log_path: Path) -> tuple[int, float]:
+    """
+    Run a command while streaming stdout/stderr both to the notebook/terminal and to a log file.
+    Uses a pseudo-terminal to preserve tqdm-like progress bars.
+
+    Colab note:
+    Sometimes PTY reads can raise OSError(Errno 5) when the child process closes the TTY.
+    We treat that as end-of-stream and exit gracefully.
+    """
     import pty  # lazy import
 
     env = dict(os.environ)
@@ -77,9 +118,15 @@ def run_with_pty(cmd, log_path: Path):
         while True:
             r, _, _ = select.select([master_fd], [], [], 0.1)
             if master_fd in r:
-                data = os.read(master_fd, 4096)
+                try:
+                    data = os.read(master_fd, 4096)
+                except OSError:
+                    # Colab PTY can throw Errno 5 when the process ends.
+                    break
+
                 if not data:
                     break
+
                 text = data.decode(errors="replace")
                 sys.stdout.write(text)
                 sys.stdout.flush()
@@ -106,7 +153,12 @@ def run_with_pty(cmd, log_path: Path):
     return proc.returncode, runtime
 
 
-def find_csv_for_run(run_name: str) -> Path | None:
+def find_csv_for_run(run_name: str) -> Optional[Path]:
+    """
+    main.py writes training CSV logs into ./logs.
+    We look for the CSV that ends with '__{run_name}.csv'.
+    If multiple files match, we take the newest one.
+    """
     logs_dir = PROJECT_ROOT / "logs"
     pattern = f"*__{run_name}.csv"
     matches = list(logs_dir.glob(pattern))
@@ -116,11 +168,11 @@ def find_csv_for_run(run_name: str) -> Path | None:
     return matches[0]
 
 
-def copy_csv_to_results(csv_path: Path, trigger_size: int, run_name: str) -> Path:
+def copy_csv_to_results(csv_path: Path, trigger_size: int) -> Path:
     out_dir = PROJECT_ROOT / "results" / "csv"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pr_tag = str(POISONING_RATE).replace(".", "p")
+    pr_tag = _pr_tag(POISONING_RATE)
     out_name = f"exp03_{DATASET}_trigger{TRIGGER_LABEL}_pr{pr_tag}_ep{EPOCHS}_ts{trigger_size}.csv"
     out_path = out_dir / out_name
 
@@ -128,24 +180,19 @@ def copy_csv_to_results(csv_path: Path, trigger_size: int, run_name: str) -> Pat
     return out_path
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Experiment 3 – run all trigger_size values sequentially")
-    parser.add_argument(
-        "--sizes",
-        type=int,
-        nargs="*",
-        default=DEFAULT_SIZES,
-        help="List of trigger sizes to run (e.g. --sizes 1 3 4 5)",
-    )
-    args = parser.parse_args()
-
+def main() -> None:
+    args = parse_args()
     sizes = args.sizes
+    device = args.device
 
     log_dir = PROJECT_ROOT / "results" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[exp03-all] running sizes={sizes}")
-    print(f"[exp03-all] params: dataset={DATASET}, pr={POISONING_RATE}, ep={EPOCHS}, trigger_label={TRIGGER_LABEL}, device={DEVICE}\n")
+    print(
+        f"[exp03-all] params: dataset={DATASET}, pr={POISONING_RATE}, ep={EPOCHS}, "
+        f"batch_size={BATCH_SIZE}, num_workers={NUM_WORKERS}, trigger_label={TRIGGER_LABEL}, device={device}\n"
+    )
 
     results = []
 
@@ -153,15 +200,17 @@ def main():
         print("=" * 80)
         print(f"[exp03] START trigger_size={ts}")
 
-        cmd, run_name = build_command(ts)
-        log_path = log_dir / f"exp03_{DATASET}_ts{ts}_pr{POISONING_RATE}_ep{EPOCHS}.log"
+        cmd, run_name = build_command(ts, device=device)
+
+        pr_tag = _pr_tag(POISONING_RATE)
+        log_path = log_dir / f"exp03_{DATASET}_ts{ts}_pr{pr_tag}_ep{EPOCHS}.log"
 
         code, runtime = run_with_pty(cmd, log_path)
 
         saved_csv = None
         csv_from_main = find_csv_for_run(run_name)
         if csv_from_main is not None:
-            saved_csv = copy_csv_to_results(csv_from_main, ts, run_name)
+            saved_csv = copy_csv_to_results(csv_from_main, ts)
 
         print(f"\n[exp03] END trigger_size={ts} | code={code} | runtime_sec={runtime:.2f}")
         if saved_csv:
