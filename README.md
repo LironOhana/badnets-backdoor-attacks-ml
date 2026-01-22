@@ -141,7 +141,7 @@ The project is based on the original BadNets experiment, which shows one fixed e
 
 ### Experiment 1 – Basic Experiment (Baseline)
 
-This experiment reproduces the basic configuration of the BadNets attack and serves as a sanity check for the implementation. The model keeps a high accuracy on clean data (about 98% on MNIST), and at the same time, we get almost full success of the attack (**ASR ≈ 99.95%**). These results confirm that the Backdoor was successfully embedded and serve as a reference point for the following experiments.
+This experiment reproduces the basic configuration of the BadNets attack and serves as a sanity check for the implementation. The model keeps a high accuracy on clean data (about 98% on MNIST), and at the same time, we get almost full success of the attack (**ASR ≈ 99.96%**). These results confirm that the Backdoor was successfully embedded and serve as a reference point for the following experiments.
 
 ### Experiment 2 – Impact of Poisoning Rate in Data
 
