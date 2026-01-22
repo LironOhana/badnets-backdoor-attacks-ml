@@ -1,25 +1,29 @@
 """
-Experiment 2 (runner) – run all poisoning_rate values one by one and save outputs.
+Experiment 2 (runner) – run all poisoning_rate values sequentially and save outputs.
 
-This script runs a sweep over poisoning_rate values (data poisoning percentage).
+This script sweeps over poisoning_rate values (data poisoning percentage).
 For each run it saves:
 - a log file to: results/logs/
-- a CSV file to: results/csv/   (copied from ./logs created by main.py, based on run_name)
+- a CSV file to: results/csv/  (copied from ./logs created by main.py, based on run_name)
 
+Notes:
+- main.py writes training CSV logs into ./logs.
+- We look for a CSV that ends with "__{run_name}.csv".
+- If multiple files match, we copy the newest one.
 """
 
-
+import argparse
 import os
+import select
+import shutil
+import subprocess
 import sys
 import time
-import shutil
-import select
-import subprocess
-import argparse
 from pathlib import Path
+from typing import Optional
 
 
-# Note: this file is under experiments/, so parents[1] is the project root
+# This file is under experiments/, so parents[1] is the project root
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MAIN_PY = PROJECT_ROOT / "main.py"
 
@@ -28,14 +32,44 @@ DATASET = "MNIST"
 EPOCHS = 100
 TRIGGER_LABEL = 1
 TRIGGER_SIZE = 5
-DEVICE = "cpu"
+
+# Performance-related settings (kept constant)
+BATCH_SIZE = 512
+NUM_WORKERS = 4
 
 # Default values for the sweep
 DEFAULT_RATES = [0.01, 0.02, 0.025, 0.0275, 0.03, 0.05]
 
 
-def build_command(poisoning_rate: float):
-    pr_tag = str(poisoning_rate).replace(".", "p")
+def parse_args() -> argparse.Namespace:
+    """Parse CLI arguments for this experiment wrapper."""
+    parser = argparse.ArgumentParser(
+        description="Experiment 2 – run all poisoning_rate values sequentially"
+    )
+    parser.add_argument(
+        "--rates",
+        type=float,
+        nargs="*",
+        default=DEFAULT_RATES,
+        help="List of poisoning rates to run (e.g. --rates 0.01 0.02 0.025 0.03 0.05)",
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Device to use: cpu | cuda | cuda:0 | mps (default: cpu). "
+             "In Colab, use --device cuda to run on GPU.",
+    )
+    return parser.parse_args()
+
+
+def _rate_tag(rate: float) -> str:
+    """Convert a float rate to a filename-friendly tag, e.g., 0.0275 -> 0p0275."""
+    return str(rate).replace(".", "p")
+
+
+def build_command(poisoning_rate: float, device: str) -> tuple[list[str], str]:
+    """Build the command that invokes main.py for a specific poisoning_rate."""
+    pr_tag = _rate_tag(poisoning_rate)
     run_name = f"exp02_pr{pr_tag}"
 
     cmd = [
@@ -44,16 +78,22 @@ def build_command(poisoning_rate: float):
         str(MAIN_PY),
         "--dataset", DATASET,
         "--epochs", str(EPOCHS),
+        "--batch_size", str(BATCH_SIZE),
+        "--num_workers", str(NUM_WORKERS),
         "--poisoning_rate", str(poisoning_rate),
         "--trigger_label", str(TRIGGER_LABEL),
         "--trigger_size", str(TRIGGER_SIZE),
-        "--device", DEVICE,
+        "--device", device,
         "--run_name", run_name,
     ]
     return cmd, run_name
 
 
-def run_with_pty(cmd, log_path: Path):
+def run_with_pty(cmd: list[str], log_path: Path) -> tuple[int, float]:
+    """
+    Run a command while streaming stdout/stderr both to the notebook/terminal and to a log file.
+    Uses a pseudo-terminal to preserve tqdm-like progress bars.
+    """
     import pty  # lazy import
 
     env = dict(os.environ)
@@ -106,12 +146,12 @@ def run_with_pty(cmd, log_path: Path):
     return proc.returncode, runtime
 
 
+def find_csv_for_run(run_name: str) -> Optional[Path]:
     """
     main.py writes training CSV logs into ./logs.
     We look for the CSV that ends with '__{run_name}.csv'.
     If multiple files match, we take the newest one.
     """
-def find_csv_for_run(run_name: str) -> Path | None:
     logs_dir = PROJECT_ROOT / "logs"
     pattern = f"*__{run_name}.csv"
     matches = list(logs_dir.glob(pattern))
@@ -121,11 +161,12 @@ def find_csv_for_run(run_name: str) -> Path | None:
     return matches[0]
 
 
-def copy_csv_to_results(csv_path: Path, poisoning_rate: float, run_name: str) -> Path:
+def copy_csv_to_results(csv_path: Path, poisoning_rate: float) -> Path:
+    """Copy the CSV produced by main.py into results/csv/ with a consistent filename."""
     out_dir = PROJECT_ROOT / "results" / "csv"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pr_tag = str(poisoning_rate).replace(".", "p")
+    pr_tag = _rate_tag(poisoning_rate)
     out_name = f"exp02_{DATASET}_trigger{TRIGGER_LABEL}_pr{pr_tag}_ep{EPOCHS}_ts{TRIGGER_SIZE}.csv"
     out_path = out_dir / out_name
 
@@ -133,24 +174,20 @@ def copy_csv_to_results(csv_path: Path, poisoning_rate: float, run_name: str) ->
     return out_path
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Experiment 2 – run all poisoning_rate values sequentially")
-    parser.add_argument(
-        "--rates",
-        type=float,
-        nargs="*",
-        default=DEFAULT_RATES,
-        help="List of poisoning rates to run (e.g. --rates 0.01 0.02 0.025 0.03 0.05)",
-    )
-    args = parser.parse_args()
-
+def main() -> None:
+    args = parse_args()
     rates = args.rates
+    device = args.device
 
     log_dir = PROJECT_ROOT / "results" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[exp02-all] running rates={rates}")
-    print(f"[exp02-all] params: dataset={DATASET}, ep={EPOCHS}, ts={TRIGGER_SIZE}, trigger_label={TRIGGER_LABEL}, device={DEVICE}\n")
+    print(
+        f"[exp02-all] params: dataset={DATASET}, ep={EPOCHS}, "
+        f"batch_size={BATCH_SIZE}, num_workers={NUM_WORKERS}, "
+        f"ts={TRIGGER_SIZE}, trigger_label={TRIGGER_LABEL}, device={device}\n"
+    )
 
     results = []
 
@@ -158,15 +195,17 @@ def main():
         print("=" * 80)
         print(f"[exp02] START poisoning_rate={pr}")
 
-        cmd, run_name = build_command(pr)
-        log_path = log_dir / f"exp02_{DATASET}_pr{pr}_ts{TRIGGER_SIZE}_ep{EPOCHS}.log"
+        cmd, run_name = build_command(pr, device=device)
+
+        pr_tag = _rate_tag(pr)
+        log_path = log_dir / f"exp02_{DATASET}_pr{pr_tag}_ts{TRIGGER_SIZE}_ep{EPOCHS}.log"
 
         code, runtime = run_with_pty(cmd, log_path)
 
         saved_csv = None
         csv_from_main = find_csv_for_run(run_name)
         if csv_from_main is not None:
-            saved_csv = copy_csv_to_results(csv_from_main, pr, run_name)
+            saved_csv = copy_csv_to_results(csv_from_main, pr)
 
         print(f"\n[exp02] END poisoning_rate={pr} | code={code} | runtime_sec={runtime:.2f}")
         if saved_csv:
