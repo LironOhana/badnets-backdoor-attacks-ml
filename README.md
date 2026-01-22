@@ -18,14 +18,23 @@ Based on this implementation, an extended experimental infrastructure was built.
 
 This section is intended for those who want to run and reproduce the experiments. For theoretical reading and analysis of results, you can skip to the following sections.
 
+### Executed Notebook (results without re-running)
+
+For convenient review, an **executed notebook** is provided:
+- `notebooks/BadNets_Experiments.ipynb`
+
+The notebook runs the experiments one-by-one and shows the outputs/figures directly, so results can be viewed on GitHub without re-running.
+For faster runtime, the notebook was executed using **GPU** in Google Colab.
+
+
 ### Prerequisites
 
 -   Python 3.9+
     
 -   Virtual Environment (Recommended)
     
--   Running on CPU (No GPU dependency)
-    
+-   Runs on CPU by default (GPU acceleration is optional via `--device cuda`)
+
 
 ### Creating a Workspace and Installing Dependencies
 
