@@ -29,6 +29,9 @@ DATASET = "MNIST"
 EPOCHS = 100
 TRIGGER_LABEL = 1
 TRIGGER_SIZE = 5
+BATCH_SIZE = 512
+NUM_WORKERS = 4
+
 
 # --- Experiment-specific parameter (fixed for baseline) ---
 POISONING_RATE = 0.10
@@ -65,6 +68,11 @@ def build_command(device: str) -> list[str]:
         str(TRIGGER_SIZE),
         "--device",
         device,
+        "--batch_size",
+        str(BATCH_SIZE),
+        "--num_workers",
+        str(NUM_WORKERS),
+
     ]
 
 
