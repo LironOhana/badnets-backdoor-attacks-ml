@@ -34,7 +34,7 @@ TRIGGER_LABEL = 1
 TRIGGER_SIZE = 5
 
 # Performance-related settings (kept constant)
-BATCH_SIZE = 512
+BATCH_SIZE = 64
 NUM_WORKERS = 4
 
 # Default values for the sweep
