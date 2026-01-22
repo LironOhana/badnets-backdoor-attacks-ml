@@ -117,7 +117,12 @@ def run_with_pty(cmd: list[str], log_path: Path) -> tuple[int, float]:
         while True:
             r, _, _ = select.select([master_fd], [], [], 0.1)
             if master_fd in r:
-                data = os.read(master_fd, 4096)
+                try:
+                    data = os.read(master_fd, 4096)
+                except OSError:
+                    # Colab PTY can raise Errno 5 when the child process closes the TTY.
+                    break
+                    
                 if not data:
                     break
                 text = data.decode(errors="replace")
