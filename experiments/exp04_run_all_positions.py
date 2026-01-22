@@ -1,42 +1,64 @@
 """
-Experiment 4 (runner) – run all trigger_pos values one by one and save outputs.
+Experiment 4 (runner) – run all trigger_pos values sequentially and save outputs.
 
 Runs the following trigger positions:
 br, bl, tr, tl, center
 
 For each run it saves:
 - a log file to: results/logs/
-- a CSV file to: results/csv/   (copied from ./logs created by main.py, based on run_name)
+- a CSV file to: results/csv/  (copied from ./logs created by main.py, based on run_name)
 
-Output is shown live in the terminal (tqdm works) using a PTY (macOS/Linux).
+Output is streamed live (tqdm works) using a PTY.
+Colab note: PTY reads can sometimes raise OSError(Errno 5) when the child process closes the TTY.
+We treat that as end-of-stream and exit gracefully.
 """
 
+import argparse
 import os
+import select
+import shutil
+import subprocess
 import sys
 import time
-import subprocess
 from pathlib import Path
-import shutil
-
-import pty
-import select
+from typing import Optional
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MAIN_PY = PROJECT_ROOT / "main.py"
 
+# Fixed experiment settings
 DATASET = "MNIST"
 EPOCHS = 100
-DEVICE = "cpu"
 
 POISONING_RATE = 0.05
 TRIGGER_SIZE = 5
 TRIGGER_LABEL = 1
 
+# Performance-related settings (kept constant)
+BATCH_SIZE = 64
+NUM_WORKERS = 4
+
 POSITIONS = ["br", "bl", "tr", "tl", "center"]
 
 
-def build_command(trigger_pos: str):
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Experiment 4 – run all trigger_pos values sequentially"
+    )
+    parser.add_argument(
+        "--device",
+        default="cpu",
+        help="Device to use: cpu | cuda | cuda:0 | mps (default: cpu). In Colab use --device cuda.",
+    )
+    return parser.parse_args()
+
+
+def _pr_tag(rate: float) -> str:
+    return str(rate).replace(".", "p")
+
+
+def build_command(trigger_pos: str, device: str) -> tuple[list[str], str]:
     run_name = f"exp04_pos{trigger_pos}"
     cmd = [
         sys.executable,
@@ -44,17 +66,25 @@ def build_command(trigger_pos: str):
         str(MAIN_PY),
         "--dataset", DATASET,
         "--epochs", str(EPOCHS),
+        "--batch_size", str(BATCH_SIZE),
+        "--num_workers", str(NUM_WORKERS),
         "--poisoning_rate", str(POISONING_RATE),
         "--trigger_label", str(TRIGGER_LABEL),
         "--trigger_size", str(TRIGGER_SIZE),
         "--trigger_pos", trigger_pos,
         "--run_name", run_name,
-        "--device", DEVICE,
+        "--device", device,
     ]
     return cmd, run_name
 
 
-def run_with_pty(cmd, log_path: Path):
+def run_with_pty(cmd: list[str], log_path: Path) -> tuple[int, float]:
+    """
+    Run a command while streaming stdout/stderr both to the notebook/terminal and to a log file.
+    Uses a pseudo-terminal to preserve tqdm-like progress bars.
+    """
+    import pty  # lazy import
+
     env = dict(os.environ)
     env["PYTHONUNBUFFERED"] = "1"
 
@@ -76,9 +106,15 @@ def run_with_pty(cmd, log_path: Path):
         while True:
             r, _, _ = select.select([master_fd], [], [], 0.1)
             if master_fd in r:
-                data = os.read(master_fd, 4096)
+                try:
+                    data = os.read(master_fd, 4096)
+                except OSError:
+                    # Colab PTY can throw Errno 5 when the process ends.
+                    break
+
                 if not data:
                     break
+
                 text = data.decode(errors="replace")
                 sys.stdout.write(text)
                 sys.stdout.flush()
@@ -86,7 +122,6 @@ def run_with_pty(cmd, log_path: Path):
                 f.flush()
 
             if proc.poll() is not None:
-                
                 time.sleep(0.2)
                 try:
                     rest = os.read(master_fd, 4096)
@@ -106,12 +141,11 @@ def run_with_pty(cmd, log_path: Path):
     return proc.returncode, runtime
 
 
+def find_csv_for_run(run_name: str) -> Optional[Path]:
     """
     main.py saves CSV logs into ./logs.
     We look for the newest CSV file that contains run_name in its filename.
     """
-
-def find_csv_for_run(run_name: str) -> Path | None:
     logs_dir = PROJECT_ROOT / "logs"
     if not logs_dir.exists():
         return None
@@ -124,12 +158,11 @@ def find_csv_for_run(run_name: str) -> Path | None:
     return candidates[0]
 
 
-def copy_csv_to_results(csv_path: Path, trigger_pos: str, run_name: str) -> Path:
+def copy_csv_to_results(csv_path: Path, trigger_pos: str) -> Path:
     out_dir = PROJECT_ROOT / "results" / "csv"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # דוגמה: exp04_MNIST_posbr_pr0p05_ts5_ep100.csv
-    pr_str = str(POISONING_RATE).replace(".", "p")
+    pr_str = _pr_tag(POISONING_RATE)
     out_name = f"exp04_{DATASET}_pos{trigger_pos}_pr{pr_str}_ts{TRIGGER_SIZE}_ep{EPOCHS}.csv"
     out_path = out_dir / out_name
 
@@ -137,12 +170,18 @@ def copy_csv_to_results(csv_path: Path, trigger_pos: str, run_name: str) -> Path
     return out_path
 
 
-def main():
+def main() -> None:
+    args = parse_args()
+    device = args.device
+
     log_dir = PROJECT_ROOT / "results" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"[exp04-all] running positions={POSITIONS}")
-    print(f"[exp04-all] params: pr={POISONING_RATE}, ts={TRIGGER_SIZE}, ep={EPOCHS}, device={DEVICE}\n")
+    print(
+        f"[exp04-all] params: pr={POISONING_RATE}, ts={TRIGGER_SIZE}, ep={EPOCHS}, "
+        f"batch_size={BATCH_SIZE}, num_workers={NUM_WORKERS}, device={device}\n"
+    )
 
     results = []
 
@@ -150,22 +189,24 @@ def main():
         print("=" * 80)
         print(f"[exp04] START trigger_pos={pos}")
 
-        cmd, run_name = build_command(pos)
-        log_path = log_dir / f"exp04_{DATASET}_pos{pos}_pr{POISONING_RATE}_ts{TRIGGER_SIZE}_ep{EPOCHS}.log"
+        cmd, run_name = build_command(pos, device=device)
+
+        pr_tag = _pr_tag(POISONING_RATE)
+        log_path = log_dir / f"exp04_{DATASET}_pos{pos}_pr{pr_tag}_ts{TRIGGER_SIZE}_ep{EPOCHS}.log"
 
         code, runtime = run_with_pty(cmd, log_path)
 
         saved_csv = None
         csv_from_main = find_csv_for_run(run_name)
         if csv_from_main is not None:
-            saved_csv = copy_csv_to_results(csv_from_main, pos, run_name)
+            saved_csv = copy_csv_to_results(csv_from_main, pos)
 
         print(f"\n[exp04] END trigger_pos={pos} | returncode={code} | runtime_sec={runtime:.2f}")
         print(f"[exp04] log saved: {log_path}")
         if saved_csv:
             print(f"[exp04] csv saved: {saved_csv}\n")
         else:
-            print("[exp04] WARNING: לא נמצא CSV בתיקיית ./logs (אולי main.py לא שומר, או שאין run_name בשם הקובץ)\n")
+            print("[exp04] WARNING: could not find CSV under ./logs (main.py may not have saved it, or run_name not present)\n")
 
         results.append((pos, code, runtime, str(log_path), str(saved_csv) if saved_csv else None))
 
